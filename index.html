@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>GOLIATH // DIRECTOR_MODE</title>
+    <script type="module">
+        import * as webllm from "https://esm.run/@mlc-ai/web-llm";
+        window.webllm = webllm;
+    </script>
+    <style>
+        :root { 
+            --glow: #ffae00; /* Changed to Amber for "Director" feel */
+            --bg: #050505; 
+            --panel: #0a0a0a; 
+            --font: 'Courier New', monospace; 
+            --danger: #ff3333; 
+        }
+        body { background: var(--bg); color: var(--glow); font-family: var(--font); margin: 0; display: flex; height: 100vh; overflow: hidden; }
+        
+        /* HUD STYLING */
+        .hud-left { width: 300px; background: #080808; border-right: 1px solid #333; padding: 20px; display: flex; flex-direction: column; gap: 15px; }
+        .stat-card { border: 1px solid #333; padding: 10px; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
+        .pulse { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: var(--glow); margin-right: 8px; box-shadow: 0 0 5px var(--glow); animation: pulse 2s infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }
+        
+        /* WORKSPACE */
+        .workspace { flex: 1; display: flex; flex-direction: column; background: #020202; position: relative;}
+        .output-stream { flex: 1; overflow-y: auto; padding: 40px; scroll-behavior: smooth; font-size: 14px; line-height: 1.6; }
+        
+        /* RENDER BLOCKS */
+        .render-block { 
+            background: #0a0a0a; 
+            border-left: 3px solid var(--glow); 
+            padding: 20px; 
+            margin-bottom: 30px; 
+            box-shadow: 0 0 20px rgba(0,0,0,0.5);
+            animation: slideIn 0.3s ease-out; 
+        }
+        .render-block.failure { border-left-color: var(--danger); }
+        .render-header { font-size: 10px; color: #666; margin-bottom: 15px; border-bottom: 1px solid #222; padding-bottom: 5px; display: flex; justify-content: space-between; }
+        
+        /* INPUT AREA */
+        .input-zone { height: 100px; background: #080808; border-top: 1px solid #333; display: flex; align-items: center; padding: 0 30px; gap: 15px; }
+        .terminal-input { flex: 1; background: #000; border: 1px solid #333; color: #fff; padding: 15px; font-family: var(--font); font-size: 14px; outline: none; }
+        .terminal-input:focus { border-color: var(--glow); }
+        .btn-forge { background: var(--glow); color: #000; border: none; padding: 15px 30px; font-weight: bold; cursor: pointer; text-transform: uppercase; letter-spacing: 2px; }
+        .btn-forge:hover { background: #fff; }
+
+        /* LOADER */
+        #loader { position: fixed; inset: 0; background: #000; z-index: 999; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+        .loader-bar { width: 200px; height: 2px; background: #333; margin-top: 20px; overflow: hidden; }
+        .loader-fill { width: 0%; height: 100%; background: var(--glow); transition: width 0.2s; }
+        
+        /* Formatting the AI Output */
+        strong { color: #fff; }
+    </style>
+</head>
+<body>
+
+<div id="loader">
+    <div style="font-size: 24px; letter-spacing: 10px; color:var(--glow);">GOLIATH_DIRECTOR</div>
+    <div id="load-status" style="font-size: 10px; color: #666; margin-top: 10px;">INITIALIZING VRAM...</div>
+    <div class="loader-bar"><div class="loader-fill" id="progress-fill"></div></div>
+    <button id="btn-init" class="btn-forge" style="margin-top:30px; display:none;" onclick="init()">MOUNT ENGINE</button>
+</div>
+
+<div class="hud-left">
+    <div class="stat-card"><div class="pulse"></div> CORE: ONLINE</div>
+    <div class="stat-card">MODEL: LLAMA-3.2-3B</div>
+    <div class="stat-card" id="memory-stats">
+        <span style="color:#666">DIRECTOR MEMORY:</span><br>
+        <div id="block-list" style="margin-top:5px; color:#444;">No Restrictions</div>
+    </div>
+    <div style="flex:1;"></div>
+    <button class="stat-card" style="width:100%; text-align:left; cursor:pointer; hover:background:#111;" onclick="clearMemories()">[RESET_CACHE]</button>
+</div>
+
+<div class="workspace">
+    <div class="output-stream" id="main-out">
+        <div style="color:#444; text-align:center; margin-top:100px;">WAITING FOR INPUT SIGNAL...</div>
+    </div>
+    <div class="input-zone">
+        <input type="text" id="user-cmd" class="terminal-input" placeholder=">> DESCRIBE SCENE CONCEPT..." onkeypress="if(event.key==='Enter') forge()">
+        <button class="btn-forge" onclick="forge()">RENDER</button>
+    </div>
+</div>
+
+<script>
+    let engine = null;
+    let isReady = false;
+    const MEM_KEY = "GOLIATH_DIRECTOR_v1";
+
+    // --- 1. MEMORY SYSTEM ---
+    function getMemories() {
+        return JSON.parse(localStorage.getItem(MEM_KEY)) || { success: [], blocks: [], history: [] };
+    }
+
+    function saveMemory(input, output, ok) {
+        let m = getMemories();
+        if (ok) {
+            m.success.push(input);
+            if(m.success.length > 10) m.success.shift();
+        } else {
+            // "Block" simply tracks concepts we failed to render properly
+            // Extract significant words (5+ chars) to add to "Caution" list
+            const words = input.toLowerCase().match(/\b(\w{5,})\b/g) || [];
+            m.blocks = [...new Set([...m.blocks, ...words])].slice(-10); // Keep last 10 blocked terms
+        }
+        m.history.push({ t: new Date().toLocaleTimeString(), in: input, status: ok ? "PASS" : "FAIL" });
+        localStorage.setItem(MEM_KEY, JSON.stringify(m));
+        updateHUD();
+    }
+
+    function updateHUD() {
+        const m = getMemories();
+        const blockText = m.blocks.length ? m.blocks.join(', ') : "None";
+        document.getElementById('block-list').innerText = "AVOID: " + blockText;
+    }
+
+    function clearMemories() {
+        localStorage.removeItem(MEM_KEY);
+        updateHUD();
+        alert("Memory Wipe Complete.");
+    }
+
+    // --- 2. ENGINE INIT ---
+    async function init() {
+        document.getElementById('btn-init').style.display = 'none';
+        document.getElementById('load-status').innerText = "LOADING MODEL WEIGHTS...";
+        
+        try {
+            engine = new window.webllm.MLCEngine();
+            engine.setInitProgressCallback((p) => { 
+                document.getElementById('load-status').innerText = p.text; 
+                document.getElementById('progress-fill').style.width = (p.progress * 100) + "%";
+            });
+            
+            // Using Llama 3.2 3B Instruct - Good balance of speed/quality for prompting
+            await engine.reload("Llama-3.2-3B-Instruct-q4f16_1-MLC");
+            
+            isReady = true;
+            document.getElementById('loader').style.display = 'none';
+            document.getElementById('main-out').innerHTML = ""; // Clear waiting text
+            updateHUD();
+        } catch(e) { 
+            alert("Init Error: " + e.message); 
+            document.getElementById('btn-init').style.display = 'block';
+        }
+    }
+
+    // Show init button on load
+    window.onload = () => { document.getElementById('btn-init').style.display = 'block'; updateHUD(); };
+
+    // --- 3. FORGE (GENERATE) ---
+    async function forge() {
+        if(!isReady) return;
+        const rawInput = document.getElementById('user-cmd').value.trim();
+        if(!rawInput) return;
+        document.getElementById('user-cmd').value = "";
+
+        // Memory Retrieval
+        const mem = getMemories();
+        const avoidanceInstruction = mem.blocks.length 
+            ? `NOTE: Avoid using these specific tropes or terms from previous failures: ${mem.blocks.join(', ')}.` 
+            : "";
+
+        // DIRECTOR PERSONA
+        const SYSTEM_PROMPT = `
+You are GOLIATH, a Master Technical Director for high-end video AI generation (Sora/Veo/Runway).
+Your goal is to take a simple concept and expand it into a "Master Prompt".
+
+${avoidanceInstruction}
+
+STRICT OUTPUT FORMAT:
+1. **SCENE HEADER**: [Time of Day] | [Location] | [Mood]
+2. **SUBJECT**: Detailed visual description of the main focus (clothing materials, skin texture, distinct features).
+3. **ACTION**: Physics-based description of movement (weight, momentum, fluid dynamics, wind interaction).
+4. **CAMERA & LENS**: Specific camera gear (e.g., "Arri Alexa, 35mm Anamorphic Lens"), movements (dolly, truck, pan), and focus (depth of field).
+5. **LIGHTING**: Type of lighting (volumetric, rim light, chiaroscuro, subsurface scattering).
+6.COPYRIGHT CHECK - Ensure no direct references to copyrighted characters or IPs. 
+Keep the tone clinical, descriptive, and highly visual. Do not be conversational. Just output the prompt data.
+`;
+
+        // UI Prep
+        const block = document.createElement('div');
+        block.className = 'render-block';
+        block.innerHTML = `
+            <div class="render-header">
+                <span>INPUT: ${rawInput.toUpperCase()}</span>
+                <span>PROCESSING...</span>
+            </div>
+            <div class="content" style="white-space: pre-wrap;"></div>
+        `;
+        document.getElementById('main-out').prepend(block);
+
+        const messages = [
+            { role: "system", content: SYSTEM_PROMPT },
+            { role: "user", content: `DIRECTOR_MODE: Expand this concept into a full Master Prompt: "${rawInput}"` }
+        ];
+
+        try {
+            const chunks = await engine.chat.completions.create({ 
+                messages, 
+                stream: true, 
+                temperature: 0.7, // Slightly higher for creativity
+                max_tokens: 500
+            });
+            
+            let fullText = "";
+            const contentBox = block.querySelector('.content');
+            const statusSpan = block.querySelector('.render-header span:last-child');
+            
+            for await (const chunk of chunks) {
+                const delta = chunk.choices?.[0]?.delta?.content || "";
+                fullText += delta;
+                contentBox.innerHTML = fullText.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>'); // Simple markdown bolding
+            }
+
+            // Post-Process
+            statusSpan.innerText = "RENDER COMPLETE";
+            statusSpan.style.color = "#00ff00";
+            saveMemory(rawInput, fullText, true);
+
+        } catch(e) {
+            block.classList.add('failure');
+            block.querySelector('.content').innerText = "ERR: " + e.message;
+            saveMemory(rawInput, "", false);
+        }
+    }
+</script>
+</body>
+</html>
